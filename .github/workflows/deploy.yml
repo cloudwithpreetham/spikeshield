@@ -1,0 +1,88 @@
+name: Blue/Green Deploy to Elastic Beanstalk
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Create deployment package
+        run: |
+          zip -r deploy.zip . \
+            -x '*.git*' \
+            -x 'frontend/node_modules/*' \
+            -x '**/__pycache__/*' \
+            -x '*.pyc' \
+            -x 'backend/tests/*'
+      
+      - name: Upload to S3
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          aws s3 cp deploy.zip s3://${{ secrets.EB_S3_BUCKET }}/spikeshield/deploy-${TIMESTAMP}.zip
+          echo "S3_KEY=spikeshield/deploy-${TIMESTAMP}.zip" >> $GITHUB_ENV
+          echo "VERSION_LABEL=spikeshield-${TIMESTAMP}" >> $GITHUB_ENV
+      
+      - name: Create EB application version
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name ${{ secrets.EB_APPLICATION_NAME }} \
+            --version-label ${{ env.VERSION_LABEL }} \
+            --source-bundle S3Bucket=${{ secrets.EB_S3_BUCKET }},S3Key=${{ env.S3_KEY }}
+      
+      - name: Deploy to STAGING
+        run: |
+          aws elasticbeanstalk update-environment \
+            --environment-name ${{ secrets.EB_STAGING_ENV_NAME }} \
+            --version-label ${{ env.VERSION_LABEL }}
+          # Wait for staging to be ready
+          aws elasticbeanstalk wait environment-updated \
+            --environment-names ${{ secrets.EB_STAGING_ENV_NAME }}
+      
+      - name: Get staging CNAME
+        run: |
+          STAGING_CNAME=$(aws elasticbeanstalk describe-environments \
+            --environment-names ${{ secrets.EB_STAGING_ENV_NAME }} \
+            --query 'Environments[0].CNAME' --output text)
+          echo "STAGING_CNAME=${STAGING_CNAME}" >> $GITHUB_ENV
+      
+      - name: Run smoke tests on staging
+        run: |
+          echo "Testing staging: ${{ env.STAGING_CNAME }}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://${{ env.STAGING_CNAME }}/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "Smoke test FAILED (HTTP $STATUS) - aborting Blue/Green swap!"
+            exit 1
+          fi
+          echo "Smoke test PASSED"
+      
+      - name: Swap CNAMEs (Blue/Green)
+        if: success()
+        run: |
+          aws elasticbeanstalk swap-environment-cnames \
+            --source-environment-name ${{ secrets.EB_STAGING_ENV_NAME }} \
+            --destination-environment-name ${{ secrets.EB_ENVIRONMENT_NAME }}
+          echo "CNAME swap complete - new version is LIVE in production!"
+      
+      - name: Notify Slack - Success
+        if: success()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"SpikeShield deploy SUCCESS - Blue/Green swap complete for ${{ env.VERSION_LABEL }}"}' \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
+      
+      - name: Notify Slack - Failure
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"SpikeShield deploy FAILED - staging smoke tests failed, CNAME NOT swapped. Version: ${{ env.VERSION_LABEL }}"}' \
+            ${{ secrets.SLACK_WEBHOOK_URL }}

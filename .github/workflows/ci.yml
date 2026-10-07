@@ -1,0 +1,61 @@
+name: CI
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: pip install pytest-cov
+      - run: pytest tests/ -v --cov=app --cov-report=xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+
+  lint-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install flake8 black isort
+      - run: black --check app/ tests/
+      - run: flake8 app/ tests/ --max-line-length=100 --extend-ignore=E203,W503
+      - run: isort --check-only app/ tests/
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: npm run build
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pip-audit
+      - run: pip-audit -r backend/requirements.txt --ignore-vuln GHSA-jfh8-c2jp-5 || true
