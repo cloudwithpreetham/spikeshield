@@ -4,8 +4,8 @@ SpikeShield AWS Infrastructure Provisioner & Deployer (make aws-up)
 Provisions or updates Elastic Beanstalk (prod & staging), SQS runbook queue,
 builds the frontend bundle, and verifies deployment health.
 """
-import sys
 import os
+import sys
 import zipfile
 from datetime import datetime
 
@@ -22,6 +22,7 @@ if sys.platform == "win32":
 
 import boto3
 from app.config import settings
+
 
 def main():
     print("=" * 65)
